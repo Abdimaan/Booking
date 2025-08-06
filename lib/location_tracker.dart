@@ -17,7 +17,7 @@ class LocationTracker {
     _locationStreamSubscription = Geolocator.getPositionStream(
       locationSettings: LocationSettings(
         accuracy: LocationAccuracy.high,
-        distanceFilter: 20, // Updates when user moves more than 20 meters
+        distanceFilter: 100, // Updates when user moves more than 20 meters
       ),
     ).listen((Position position) async {
       await _handleLocationUpdate(position);
@@ -41,7 +41,7 @@ class LocationTracker {
         );
 
         // Only update if moved more than 20 meters
-        if (distance >= 20) {
+        if (distance >= 100) {
           await LocationService.saveUserLocation(
             _currentUserId!, 
             position.latitude, 
