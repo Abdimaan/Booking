@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'login_page.dart';
+import 'user_home.dart';
+import 'provider_home.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -20,7 +22,109 @@ class MyApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       title: 'Job App',
       theme: ThemeData(primarySwatch: Colors.blue),
-      home: const LoginPage(),
+      home: const AuthWrapper(),
     );
+  }
+}
+
+class AuthWrapper extends StatefulWidget {
+  const AuthWrapper({super.key});
+
+  @override
+  State<AuthWrapper> createState() => _AuthWrapperState();
+}
+
+class _AuthWrapperState extends State<AuthWrapper> {
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<AuthState>(
+      stream: Supabase.instance.client.auth.onAuthStateChange,
+      builder: (context, snapshot) {
+        // Check current session first
+        final currentSession = Supabase.instance.client.auth.currentSession;
+
+        if (currentSession != null) {
+          // print('User is logged in with ID: ${currentSession.user.id}');
+          // User is logged in, check their role and navigate accordingly
+          return FutureBuilder<Map<String, dynamic>?>(
+            future: _getUserRole(currentSession.user.id),
+            builder: (context, roleSnapshot) {
+              if (roleSnapshot.connectionState == ConnectionState.waiting) {
+                return const Scaffold(
+                  body: Center(child: CircularProgressIndicator()),
+                );
+              }
+
+              if (roleSnapshot.hasData && roleSnapshot.data != null) {
+                final role = roleSnapshot.data!['role'] as String;
+                // print('User role: $role');
+                if (role == 'provider') {
+                  return const ProviderHome();
+                } else {
+                  return const UserHome();
+                }
+              } else {
+                // print('No role found for user, showing login page');
+                // User exists but no role found, show registration
+                return const LoginPage();
+              }
+            },
+          );
+        }
+
+        // Also check if snapshot has data and session
+        if (snapshot.hasData) {
+          final session = snapshot.data!.session;
+          if (session != null) {
+            // print('User is logged in via stream with ID: ${session.user.id}');
+            // User is logged in, check their role and navigate accordingly
+            return FutureBuilder<Map<String, dynamic>?>(
+              future: _getUserRole(session.user.id),
+              builder: (context, roleSnapshot) {
+                if (roleSnapshot.connectionState == ConnectionState.waiting) {
+                  return const Scaffold(
+                    body: Center(child: CircularProgressIndicator()),
+                  );
+                }
+
+                if (roleSnapshot.hasData && roleSnapshot.data != null) {
+                  final role = roleSnapshot.data!['role'] as String;
+                  // print('User role: $role');
+                  if (role == 'provider') {
+                    return const ProviderHome();
+                  } else {
+                    return const UserHome();
+                  }
+                } else {
+                  // print('No role found for user, showing login page');
+                  // User exists but no role found, show registration
+                  return const LoginPage();
+                }
+              },
+            );
+          }
+        }
+
+        print('User is not logged in, showing login page');
+        // User is not logged in
+        return const LoginPage();
+      },
+    );
+  }
+
+  Future<Map<String, dynamic>?> _getUserRole(String userId) async {
+    try {
+      // print('Fetching role for user: $userId');
+      final response = await Supabase.instance.client
+          .from('users')
+          .select('role')
+          .eq('id', userId)
+          .single();
+      // print('Role response: $response');
+      return response;
+    } catch (e) {
+      print('Error getting user role: $e');
+      return null;
+    }
   }
 }

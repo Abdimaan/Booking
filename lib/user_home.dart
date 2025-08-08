@@ -1,4 +1,3 @@
-import 'package:booking/login_page.dart';
 import 'package:booking/userppagejob.dart';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -72,11 +71,9 @@ class UserHomeBody extends StatelessWidget {
           ),
           SizedBox(height: 200),
           ElevatedButton(
-            onPressed: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => const LoginPage()),
-              );
+            onPressed: () async {
+              await Supabase.instance.client.auth.signOut();
+              // Navigation will be handled automatically by AuthWrapper
             },
             child: const Text('log out'),
           ),

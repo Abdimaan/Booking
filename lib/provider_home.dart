@@ -93,47 +93,72 @@ class _ProviderAvailableJobsPageState extends State<ProviderAvailableJobsPage> {
   Future<List<Map<String, dynamic>>> fetchPendingJobs() async {
     final providerId = Supabase.instance.client.auth.currentUser!.id;
 
+    // Get provider location
+    final providerLocation = await LocationService.getUserLocation(providerId);
+    if (providerLocation == null) return [];
+
     // Get rejected job IDs for this provider
     final rejectedJobIdsResponse = await Supabase.instance.client
         .from('rejected_jobs')
         .select('job_id')
         .eq('provider_id', providerId);
-        //fectches the rejected jobs by the provider
 
     final rejectedJobIds = rejectedJobIdsResponse
         .map((e) => e['job_id'] as String)
         .toList();
-        // this line converts the response to a list of job IDs and stores it in rejectedJobIds as format of string list 
 
-    // Get all pending jobs with user locations
+    // Get all pending jobs with user locations and created_at
     final jobsResponse = await Supabase.instance.client
         .from('jobs')
         .select('*, users!fk_jobs_created_by(name, id)')
         .eq('status', 'pending')
         .order('created_at');
-        // fetchs the jobs that are pending and also fetches the name of the user who created the job 
 
     final allJobs = List<Map<String, dynamic>>.from(jobsResponse);
-    // this line converts the response to a list of maps and stores it in allJobs
 
-    // Filter out rejected jobs and display only those that are not rejected by the provider
-    final visibleJobs = allJobs
-        .where((job) => !rejectedJobIds.contains(job['id']))
-        .toList();
+    final now = DateTime.now();
+    final visibleJobs = <Map<String, dynamic>>[];
 
-    // Add distance information if provider location is available
-    if (_providerLocation != null) {
-      for (var job in visibleJobs) {
-        final userLocation = await LocationService.getUserLocation(job['users']['id']);
-        if (userLocation != null) {
-          final distance = LocationService.calculateDistance(
-            _providerLocation!['latitude'],
-            _providerLocation!['longitude'],
-            userLocation['latitude'],
-            userLocation['longitude'],
-          );
-          job['distance'] = distance;
-        }
+    for (var job in allJobs) {
+      if (rejectedJobIds.contains(job['id'])) continue;
+
+      // Get job requester location
+      final userLocation = await LocationService.getUserLocation(
+        job['users']['id'],
+      );
+      if (userLocation == null) continue;
+
+      // Calculate distance
+      final distance = LocationService.calculateDistance(
+        providerLocation['latitude'],
+        providerLocation['longitude'],
+        userLocation['latitude'],
+        userLocation['longitude'],
+      );
+      job['distance'] = distance;
+
+      // Calculate time since job creation
+      final createdAt = DateTime.parse(job['created_at']);
+      final minutesSinceCreation = now.difference(createdAt).inMinutes;
+
+      // Determine allowed distance based on phase
+      double allowedDistance;
+      if (minutesSinceCreation < 1) {
+        allowedDistance = 80; // meters
+      } else if (minutesSinceCreation < 2) {
+        allowedDistance = 700; // meters
+      } else if (minutesSinceCreation < 3) {
+        allowedDistance = 1100; // meters
+      } else if (minutesSinceCreation < 4) {
+        allowedDistance = 1260; // meters
+      } else if (minutesSinceCreation < 5) {
+        allowedDistance = 1300; // meters
+      } else {
+        allowedDistance = double.infinity; // public phase
+      }
+
+      if (distance <= allowedDistance) {
+        visibleJobs.add(job);
       }
     }
 
@@ -269,11 +294,9 @@ class _ProviderAvailableJobsPageState extends State<ProviderAvailableJobsPage> {
         },
       ),
       floatingActionButton: FloatingActionButton(
-        onPressed: () {
-          Navigator.push(
-            context,
-            MaterialPageRoute(builder: (_) => const LoginPage()),
-          );
+        onPressed: () async {
+          await Supabase.instance.client.auth.signOut();
+          // Navigation will be handled automatically by AuthWrapper
         },
         child: const Icon(Icons.logout),
         tooltip: 'Log Out',
