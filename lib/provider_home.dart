@@ -1,5 +1,6 @@
 import 'package:booking/login_page.dart';
 import 'package:booking/providerpagejob.dart';
+import 'package:booking/chats_list_page.dart';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'location_service.dart';
@@ -12,29 +13,56 @@ class ProviderHome extends StatefulWidget {
   State<ProviderHome> createState() => _ProviderHomeState();
 }
 
-class _ProviderHomeState extends State<ProviderHome> {
+class _ProviderHomeState extends State<ProviderHome>
+    with WidgetsBindingObserver {
   int _selectedIndex = 0;
   final List<Widget> _pages = [
     const ProviderAvailableJobsPage(),
     const ProviderJobsPage(),
+    const ChatsListPage(),
   ];
   final LocationTracker _locationTracker = LocationTracker();
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _startLocationTracking();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+
+    switch (state) {
+      case AppLifecycleState.resumed:
+        _startLocationTracking();
+        break;
+      case AppLifecycleState.paused:
+        break;
+      case AppLifecycleState.inactive:
+        break;
+      case AppLifecycleState.detached:
+        break;
+      case AppLifecycleState.hidden:
+        break;
+    }
   }
 
   void _startLocationTracking() async {
     final user = Supabase.instance.client.auth.currentUser;
     if (user != null) {
+      // Stop existing tracking before starting new one
+      if (_locationTracker.isTracking) {
+        _locationTracker.stopTracking();
+      }
       _locationTracker.startTracking(user.id);
     }
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _locationTracker.stopTracking();
     super.dispose();
   }
@@ -55,6 +83,7 @@ class _ProviderHomeState extends State<ProviderHome> {
         items: const [
           BottomNavigationBarItem(icon: Icon(Icons.work), label: 'Jobs'),
           BottomNavigationBarItem(icon: Icon(Icons.history), label: 'My Jobs'),
+          BottomNavigationBarItem(icon: Icon(Icons.chat), label: 'Chats'),
         ],
       ),
     );
@@ -80,6 +109,10 @@ class _ProviderAvailableJobsPageState extends State<ProviderAvailableJobsPage> {
     jobFuture = fetchPendingJobs();
   }
 
+  Future<void> _debugDatabaseConnection() async {
+    // Database connection test removed for production
+  }
+
   Future<void> _loadProviderLocation() async {
     final user = Supabase.instance.client.auth.currentUser;
     if (user != null) {
@@ -93,9 +126,14 @@ class _ProviderAvailableJobsPageState extends State<ProviderAvailableJobsPage> {
   Future<List<Map<String, dynamic>>> fetchPendingJobs() async {
     final providerId = Supabase.instance.client.auth.currentUser!.id;
 
-    // Get provider location
-    final providerLocation = await LocationService.getUserLocation(providerId);
-    if (providerLocation == null) return [];
+    // Get provider category first
+    final providerResponse = await Supabase.instance.client
+        .from('users')
+        .select('category')
+        .eq('id', providerId)
+        .maybeSingle();
+
+    final providerCategory = providerResponse?['category'] as String?;
 
     // Get rejected job IDs for this provider
     final rejectedJobIdsResponse = await Supabase.instance.client
@@ -116,17 +154,82 @@ class _ProviderAvailableJobsPageState extends State<ProviderAvailableJobsPage> {
 
     final allJobs = List<Map<String, dynamic>>.from(jobsResponse);
 
-    final now = DateTime.now();
+    // Get provider location
+    final providerLocation = await LocationService.getUserLocation(providerId);
+
+    if (providerLocation == null) {
+      // Try to get current location if not saved
+      final position = await LocationService.getCurrentLocation(context);
+      if (position != null) {
+        await LocationService.saveUserLocation(
+          providerId,
+          position.latitude,
+          position.longitude,
+        );
+        // Update the provider location
+        setState(() {
+          _providerLocation = {
+            'latitude': position.latitude,
+            'longitude': position.longitude,
+          };
+        });
+        // Use the new location for calculations
+        final updatedProviderLocation = {
+          'latitude': position.latitude,
+          'longitude': position.longitude,
+        };
+        return await _fetchJobsWithLocation(
+          updatedProviderLocation,
+          providerCategory,
+          rejectedJobIds,
+          allJobs,
+        );
+      } else {
+        // If we can't get location, show all jobs
+        return await _fetchAllPendingJobs();
+      }
+    }
+
+    // Use the provider location for calculations
+    return await _fetchJobsWithLocation(
+      providerLocation,
+      providerCategory,
+      rejectedJobIds,
+      allJobs,
+    );
+  }
+
+  // Helper method to fetch jobs with location-based filtering
+  Future<List<Map<String, dynamic>>> _fetchJobsWithLocation(
+    Map<String, dynamic> providerLocation,
+    String? providerCategory,
+    List<String> rejectedJobIds,
+    List<Map<String, dynamic>> allJobs,
+  ) async {
     final visibleJobs = <Map<String, dynamic>>[];
 
     for (var job in allJobs) {
-      if (rejectedJobIds.contains(job['id'])) continue;
+      if (rejectedJobIds.contains(job['id'])) {
+        continue;
+      }
+
+      // Filter by category - only show jobs that match provider's category
+      final jobCategory = job['category'] as String?;
+
+      if (providerCategory != null && jobCategory != null) {
+        if (providerCategory != jobCategory) {
+          continue; // Skip jobs that don't match provider's category
+        }
+      }
 
       // Get job requester location
       final userLocation = await LocationService.getUserLocation(
         job['users']['id'],
       );
-      if (userLocation == null) continue;
+
+      if (userLocation == null) {
+        continue;
+      }
 
       // Calculate distance
       final distance = LocationService.calculateDistance(
@@ -137,29 +240,66 @@ class _ProviderAvailableJobsPageState extends State<ProviderAvailableJobsPage> {
       );
       job['distance'] = distance;
 
-      // Calculate time since job creation
-      final createdAt = DateTime.parse(job['created_at']);
-      final minutesSinceCreation = now.difference(createdAt).inMinutes;
+      // Simplified distance logic - show jobs within reasonable distance
+      const maxReasonableDistance = 10000.0; // 10km
 
-      // Determine allowed distance based on phase
-      double allowedDistance;
-      if (minutesSinceCreation < 1) {
-        allowedDistance = 80; // meters
-      } else if (minutesSinceCreation < 2) {
-        allowedDistance = 700; // meters
-      } else if (minutesSinceCreation < 3) {
-        allowedDistance = 1100; // meters
-      } else if (minutesSinceCreation < 4) {
-        allowedDistance = 1260; // meters
-      } else if (minutesSinceCreation < 5) {
-        allowedDistance = 1300; // meters
-      } else {
-        allowedDistance = double.infinity; // public phase
-      }
-
-      if (distance <= allowedDistance) {
+      if (distance <= maxReasonableDistance) {
         visibleJobs.add(job);
       }
+    }
+
+    return visibleJobs;
+  }
+
+  // Fallback method to show all pending jobs when location is not available
+  Future<List<Map<String, dynamic>>> _fetchAllPendingJobs() async {
+    final providerId = Supabase.instance.client.auth.currentUser!.id;
+
+    // Get provider category
+    final providerResponse = await Supabase.instance.client
+        .from('users')
+        .select('category')
+        .eq('id', providerId)
+        .maybeSingle();
+
+    final providerCategory = providerResponse?['category'] as String?;
+
+    // Get rejected job IDs for this provider
+    final rejectedJobIdsResponse = await Supabase.instance.client
+        .from('rejected_jobs')
+        .select('job_id')
+        .eq('provider_id', providerId);
+
+    final rejectedJobIds = rejectedJobIdsResponse
+        .map((e) => e['job_id'] as String)
+        .toList();
+
+    // Get all pending jobs
+    final jobsResponse = await Supabase.instance.client
+        .from('jobs')
+        .select('*, users!fk_jobs_created_by(name, id)')
+        .eq('status', 'pending')
+        .order('created_at');
+
+    final allJobs = List<Map<String, dynamic>>.from(jobsResponse);
+
+    final visibleJobs = <Map<String, dynamic>>[];
+
+    for (var job in allJobs) {
+      if (rejectedJobIds.contains(job['id'])) continue;
+
+      // Filter by category - only show jobs that match provider's category
+      final jobCategory = job['category'] as String?;
+
+      if (providerCategory != null && jobCategory != null) {
+        if (providerCategory != jobCategory) {
+          continue; // Skip jobs that don't match provider's category
+        }
+      }
+
+      // Add distance as null to indicate unknown
+      job['distance'] = null;
+      visibleJobs.add(job);
     }
 
     return visibleJobs;
@@ -259,6 +399,29 @@ class _ProviderAvailableJobsPageState extends State<ProviderAvailableJobsPage> {
                         '${job['description'] ?? ''}\nRequested by: $requester',
                         style: const TextStyle(fontSize: 12),
                       ),
+                      if (job['category'] != null)
+                        Container(
+                          margin: const EdgeInsets.only(top: 4),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 8,
+                            vertical: 2,
+                          ),
+                          decoration: BoxDecoration(
+                            color: Colors.blue.withOpacity(0.1),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(
+                              color: Colors.blue.withOpacity(0.3),
+                            ),
+                          ),
+                          child: Text(
+                            job['category'],
+                            style: const TextStyle(
+                              fontSize: 10,
+                              color: Colors.blue,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
                       if (distance != null)
                         Text(
                           _formatDistance(distance),

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'location_service.dart';
+import 'chat_page.dart';
 
 class UserJobsPage extends StatefulWidget {
   const UserJobsPage({super.key});
@@ -10,14 +11,12 @@ class UserJobsPage extends StatefulWidget {
 }
 
 class _UserJobsPageState extends State<UserJobsPage> {
-  late Future<List<Map<String, dynamic>>> jobFuture;
   Map<String, dynamic>? _userLocation;
 
   @override
   void initState() {
     super.initState();
     _loadUserLocation();
-    jobFuture = fetchUserJobs();
   }
 
   Future<void> _loadUserLocation() async {
@@ -30,36 +29,47 @@ class _UserJobsPageState extends State<UserJobsPage> {
     }
   }
 
-  Future<List<Map<String, dynamic>>> fetchUserJobs() async {
+  Stream<List<Map<String, dynamic>>> getUserJobsStream() {
     final uid = Supabase.instance.client.auth.currentUser!.id;
-
-    final response = await Supabase.instance.client
+    return Supabase.instance.client
         .from('jobs')
-        .select('*, users!jobs_accepted_by_fkey(name, id)')
+        .stream(primaryKey: ['id'])
         .eq('created_by', uid)
-        .order('created_at');
+        .order('created_at')
+        .asyncMap((data) async {
+          // Enrich with provider name and distance
+          for (var job in data) {
+            final acceptedBy = job['accepted_by'];
+            if (acceptedBy != null) {
+              try {
+                final providerRows = await Supabase.instance.client
+                    .from('users')
+                    .select('name')
+                    .eq('id', acceptedBy)
+                    .limit(1);
+                if (providerRows is List && providerRows.isNotEmpty) {
+                  job['provider_name'] = providerRows.first['name'];
+                }
+              } catch (_) {}
 
-    final jobs = List<Map<String, dynamic>>.from(response);
-
-    // Add distance information if user location is available
-    if (_userLocation != null) {
-      for (var job in jobs) {
-        if (job['accepted_by'] != null) {
-          final providerLocation = await LocationService.getUserLocation(job['accepted_by']);
-          if (providerLocation != null) {
-            final distance = LocationService.calculateDistance(
-              _userLocation!['latitude'],
-              _userLocation!['longitude'],
-              providerLocation['latitude'],
-              providerLocation['longitude'],
-            );
-            job['distance'] = distance;
+              if (_userLocation != null) {
+                final providerLocation = await LocationService.getUserLocation(
+                  acceptedBy,
+                );
+                if (providerLocation != null) {
+                  final distance = LocationService.calculateDistance(
+                    _userLocation!['latitude'],
+                    _userLocation!['longitude'],
+                    providerLocation['latitude'],
+                    providerLocation['longitude'],
+                  );
+                  job['distance'] = distance;
+                }
+              }
+            }
           }
-        }
-      }
-    }
-
-    return jobs;
+          return data;
+        });
   }
 
   String _formatDistance(double? distance) {
@@ -75,22 +85,20 @@ class _UserJobsPageState extends State<UserJobsPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('My Job Requests'),
-        actions: [
-          IconButton(
-            icon: Icon(Icons.refresh),
-            onPressed: () {
-              _loadUserLocation();
-              setState(() {
-                jobFuture = fetchUserJobs();
-              });
-            },
-            tooltip: 'Refresh',
-          ),
-        ],
+        // title: const Text('My Job Requests'),
+        // actions: [
+        //   IconButton(
+        //     icon: Icon(Icons.refresh),
+        //     onPressed: () {
+        //       _loadUserLocation();
+        //       setState(() {});
+        //     },
+        //     tooltip: 'Refresh',
+        //   ),
+        // ],
       ),
-      body: FutureBuilder<List<Map<String, dynamic>>>(
-        future: jobFuture,
+      body: StreamBuilder<List<Map<String, dynamic>>>(
+        stream: getUserJobsStream(),
         builder: (context, snapshot) {
           if (snapshot.hasError) {
             return Center(child: Text('Error: ${snapshot.error}'));
@@ -109,7 +117,7 @@ class _UserJobsPageState extends State<UserJobsPage> {
             itemBuilder: (context, index) {
               final job = jobs[index];
               final status = job['status'];
-              final providerName = job['users']?['name'] ?? 'Unknown';
+              final providerName = job['provider_name'] ?? 'Unknown';
               final distance = job['distance'];
 
               return Card(
@@ -117,9 +125,17 @@ class _UserJobsPageState extends State<UserJobsPage> {
                 margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                 child: ListTile(
                   leading: CircleAvatar(
-                    backgroundColor: status == 'accepted' ? Colors.green : Colors.orange,
+                    backgroundColor: status == 'completed'
+                        ? Colors.green
+                        : status == 'accepted'
+                        ? Colors.green
+                        : Colors.orange,
                     child: Icon(
-                      status == 'accepted' ? Icons.check : Icons.pending,
+                      status == 'completed'
+                          ? Icons.done_all
+                          : status == 'accepted'
+                          ? Icons.check
+                          : Icons.pending,
                       color: Colors.white,
                     ),
                   ),
@@ -131,8 +147,12 @@ class _UserJobsPageState extends State<UserJobsPage> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text('Status: $status'),
-                      if (status == 'accepted') ...[
-                        Text('Accepted by: $providerName'),
+                      if (status == 'accepted' || status == 'completed') ...[
+                        Text(
+                          status == 'completed'
+                              ? 'Completed by: $providerName'
+                              : 'Accepted by: $providerName',
+                        ),
                         if (distance != null)
                           Text(
                             _formatDistance(distance),
@@ -145,6 +165,34 @@ class _UserJobsPageState extends State<UserJobsPage> {
                     ],
                   ),
                   isThreeLine: true,
+                  trailing: (status == 'accepted' || status == 'completed')
+                      ? Material(
+                          color: const Color(0xFFE5F6F8),
+                          borderRadius: BorderRadius.circular(12),
+                          child: InkWell(
+                            borderRadius: BorderRadius.circular(12),
+                            onTap: () {
+                              Navigator.of(context).push(
+                                MaterialPageRoute(
+                                  builder: (_) => ChatPage(
+                                    jobId: job['id'],
+                                    jobTitle: job['title'],
+                                    otherUserId: job['accepted_by'],
+                                  ),
+                                ),
+                              );
+                            },
+                            child: const Padding(
+                              padding: EdgeInsets.all(10),
+                              child: Icon(
+                                Icons.chat_bubble_outline,
+                                color: Color(0xFF00A6B2),
+                                size: 28,
+                              ),
+                            ),
+                          ),
+                        )
+                      : null,
                 ),
               );
             },

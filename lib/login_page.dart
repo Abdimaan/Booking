@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import 'user_home.dart';
+import 'booking.dart';
 import 'provider_home.dart';
 import 'location_service.dart';
 import 'ragis.dart';
@@ -21,7 +21,7 @@ class _LoginPageState extends State<LoginPage> {
   Future<void> _requestLocationAndSave(String userId) async {
     try {
       // Request location permission and get current location
-      Position? position = await LocationService.getCurrentLocation();
+      Position? position = await LocationService.getCurrentLocation(context);
 
       if (position != null) {
         // Save location to database
@@ -128,22 +128,33 @@ class _LoginPageState extends State<LoginPage> {
         await _requestLocationAndSave(uid);
       }
 
+      bool didNavigate = false;
       if (profile['role'] == 'user') {
+        didNavigate = true;
+        if (!mounted) return;
         Navigator.pushReplacement(
           context,
           MaterialPageRoute(builder: (_) => const UserHome()),
         );
       } else {
+        didNavigate = true;
+        if (!mounted) return;
         Navigator.pushReplacement(
           context,
           MaterialPageRoute(builder: (_) => const ProviderHome()),
         );
       }
+      if (didNavigate) {
+        return; // Avoid resetting state after navigation
+      }
     } catch (e) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Login failed: $e')));
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Login failed: $e')));
+      }
     } finally {
+      if (!mounted) return;
       setState(() => _isLoading = false);
     }
   }
@@ -192,7 +203,7 @@ class _LoginPageState extends State<LoginPage> {
               onPressed: () {
                 Navigator.push(
                   context,
-                  MaterialPageRoute(builder: (context) => const ragistarion()),
+                  MaterialPageRoute(builder: (context) => const Ragistration()),
                 );
               },
               child: const Text('Don\'t have an account? Sign Up'),
